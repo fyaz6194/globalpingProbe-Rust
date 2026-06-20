@@ -8,8 +8,6 @@ A Rust rewrite of the [globalping-probe](https://github.com/jsdelivr/globalping-
 - Single static binary — no runtime, no `node_modules`, no self-update logic
 - Async via Tokio — maps directly onto the probe's concurrent measurement model
 
-For full research and decision rationale see [`.CLAUDE/initialResearch/`](.CLAUDE/initialResearch/00-index.md).
-
 ---
 
 ## Requirements
@@ -93,9 +91,6 @@ globalPing-Rust/
 │       ├── stats_reporting_test.rs MeasurementStats counters, timeout constant
 │       ├── status_test.rs          StatusManager state machine, live ICMP/TCP
 │       └── traceroute_test.rs      Traceroute command: args, parse, live trace
-├── .CLAUDE/
-│   ├── initialResearch/      Pre-implementation research (language choice, CVEs…)
-│   └── process/              Build and test stage documentation
 ├── Cargo.toml                Dependencies, build profiles
 └── .gitignore
 ```
@@ -266,7 +261,26 @@ dispatch(req, client, status, limiter, stats)
 
 ---
 
+## Performance
+
+Measured live with both probes connected to the Globalping API — Rust on the same amd64 machine and on an Oracle Cloud ARM64 instance (1 OCPU / 6 GB RAM, Mumbai).
+
+| Metric | Rust (amd64) | Rust (arm64, Oracle) | Node.js (amd64) |
+|---|---|---|---|
+| Docker image size | ~58 MB | ~57 MB | ~111 MB |
+| Docker image layers | 4 | 4 | 11 |
+| Memory (connected, idle) | **13.8 MiB** | **5.2 MiB** | 47.3 MiB |
+| Startup to API connect | ~5 s | ~6 s | ~10 s |
+| PIDs | 9 | 2 | 12 |
+
+**Highlights:**
+- **~3.4× less RAM** than Node.js on the same hardware (13.8 MiB vs 47.3 MiB)
+- **~9× less RAM** on ARM64 (5.2 MiB — no JIT overhead, no V8 heap)
+- **~47 % smaller Docker image** (58 MB vs 111 MB)
+- **2× faster startup** (~5 s vs ~10 s to first API connection)
+
+---
+
 ## Reference
 
-- Original Node.js probe: [`../`](../)
-- Research rationale: [`.CLAUDE/initialResearch/`](.CLAUDE/initialResearch/00-index.md)
+- Original Node.js probe: [jsdelivr/globalping-probe](https://github.com/jsdelivr/globalping-probe)
