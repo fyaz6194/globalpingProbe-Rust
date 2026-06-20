@@ -1,0 +1,13 @@
+mod dns_test;
+mod graceful_shutdown_test;
+mod http_test;
+mod mtr_test;
+mod output_limit_test;
+mod probe_test;
+mod progress_updates_test;
+mod stats_reporting_test;
+mod status_test;
+mod ping_test;
+mod private_ip_test;
+mod progress_buffer_test;
+mod traceroute_test;

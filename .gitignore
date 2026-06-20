@@ -1,0 +1,25 @@
+/target
+
+# Local Claude AI research notes — may contain private tokens and personal data
+.CLAUDE/
+
+# Local cargo config (sets Windows-native build target — not portable)
+.cargo/config.toml
+
+# Environment / secret files
+.env
+.env.*
+*.env
+config/local.*
+config/production.*
+config/secrets.*
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
