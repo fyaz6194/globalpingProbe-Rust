@@ -293,12 +293,17 @@ Raw data in [`teststats/`](teststats/).
 > amd64 figures are from WSL2 (Hyper-V VM) which adds slight memory overhead vs bare-metal Linux.
 > ARM64 figures are from Oracle Cloud bare-metal and are the more accurate reference.
 >
-> **CPU peak figures are opportunistic, not a controlled benchmark.** Each probe was connected
-> to the live Globalping API and sampled every 10s for 5 minutes; the "peak" is whichever sample
-> happened to land while a real job from the network was executing. Job type (ping vs traceroute
-> vs MTR), arrival timing, and count of jobs received differ between runs, so the peak values are
-> not directly comparable apples-to-apples — they only show that CPU usage is bursty and returns
-> to near-zero immediately after.
+> **CPU peak figures above are opportunistic, not a controlled benchmark.** Each probe was
+> connected to the live Globalping API and sampled every 10s for 5 minutes; the "peak" is
+> whichever sample happened to land while a real job from the network was executing. Job type
+> (ping vs traceroute vs MTR), arrival timing, and count of jobs received differ between runs,
+> so the peak values are not directly comparable apples-to-apples.
+>
+> A controlled follow-up — forcing the *identical* job (ping, 16 packets) at both probes in
+> isolation from the public network — found CPU cost negligible (<0.4%) for both on a plain
+> ping. This confirms the 23% peak above was very likely a heavier job type (mtr/traceroute)
+> from the live network, not a real ping-handling cost difference.
+> See [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md) for full methodology.
 
 ---
 
