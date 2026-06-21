@@ -239,6 +239,54 @@ dispatch(req, client, status, limiter, stats)
 
 ---
 
+## Security
+
+The probe executes network measurements requested by the API by shelling out to
+system tools (`ping`, `traceroute`, `mtr`, `dig`, `curl`, `openssl`). Every job
+field (`target`, `resolver`, `Host`, `path`, `query`, headers) is therefore
+**untrusted input**, and the probe is designed to stay safe even against a
+hostile or compromised API. A self-audit of that attack surface was performed;
+the findings below were fixed and covered with regression tests.
+
+### Audit findings (all fixed)
+
+| Severity | Issue | Fix |
+|---|---|---|
+| **Critical** | **Command injection (RCE)** — TLS certificate enrichment built an `sh -c` string with the HTTPS `Host` value interpolated in. `Host` is never used for DNS resolution and was unvalidated, so a job with `Host: x; <command>` executed arbitrary shell. | `enrich_tls` now spawns `openssl` with an explicit argv and pipes data over stdin — **no shell, no temp files, no string interpolation**. |
+| **High** | **Argument injection** — `target`/`resolver` were passed to the tools as bare arguments; a value like `-f…` was accepted (validation only ran the private-IP check *if the value already parsed as an IP*) and would be read by the tool as a flag. | New strict allow-list (`util::validate::is_safe_host`) rejects leading `-`, whitespace, and shell metacharacters; applied to every command's `target`, `resolver`, and `Host`. |
+| **High** | **SSRF filter bypass** — IPv4-mapped IPv6 (`::ffff:127.0.0.1`) and NAT64 (`64:ff9b::/96`) were not normalised, so they slipped past the private-range filter and could reach `localhost` / `169.254.169.254` (cloud metadata). | `is_ip_private` now canonicalises mapped / NAT64 addresses to their embedded IPv4 before the range check. |
+| **Medium** | **DNS SSRF** — the DNS command had no private-IP check at all; a custom `resolver` + `port` could be aimed at internal hosts, turning the probe into a port scanner. | DNS now validates the resolver and rejects private/internal resolver IPs. |
+| **Low** | **Memory DoS** — the HTTP body file was read fully into memory before truncation. | Bounded read caps memory regardless of response size. |
+
+### Defense-in-depth already in place
+
+- **No shell anywhere** — every external tool is spawned with an explicit argv
+  (`Command::new(...).args(...)`), so there is no shell to interpret metacharacters.
+- **Private/SSRF filtering** runs both *before* spawning (on the requested target)
+  and *after* name resolution (on the address actually used), in every command.
+- **Hard limits**: 30 s per-measurement timeout, max 3 concurrent measurements,
+  10 KiB `rawOutput` / body / header caps (UTF-8-boundary-safe).
+- **Least privilege**: container runs the binary with only `cap_net_raw` on `ping`;
+  no extra capabilities, no root entrypoint logic.
+
+### Dependency audit
+
+`cargo audit` reports **no known vulnerabilities** in the dependency tree. Three
+transitive crates (`backoff`, `instant`, `rustls-pemfile`) carry informational
+*unmaintained* advisories only.
+
+### Running the security tests
+
+```bash
+cargo test --lib                                   # all unit tests incl. security
+cargo test --lib validate::                        # input allow-list
+cargo test --lib private_ip::                      # SSRF / mapped-IPv6 filtering
+cargo test --lib validate_tests::                  # HTTP injection regressions
+cargo audit                                        # dependency CVE scan
+```
+
+---
+
 ## Dependencies
 
 | Crate | Purpose |

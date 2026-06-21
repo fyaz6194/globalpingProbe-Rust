@@ -319,6 +319,7 @@ use tokio::time::{timeout, Duration};
 
 use super::MeasurementCommand;
 use crate::util::private_ip::is_ip_private;
+use crate::util::validate::is_safe_host;
 use parse::{build_output, parse_raw, MtrStatus, ParsedMtr};
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -347,6 +348,9 @@ fn default_ip_version() -> u8 { 4 }
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(opts: &MtrOptions) -> Result<()> {
+    if !is_safe_host(&opts.target) {
+        bail!("Invalid target.");
+    }
     if opts.ip_version != 4 && opts.ip_version != 6 {
         bail!("ipVersion must be 4 or 6");
     }
@@ -614,10 +618,11 @@ p 2 8234 2";
         // seq 0: sent but no reply (drop), seq 1 and 2: sent and replied (rcv)
         let raw = "h 0 1.1.1.1\nx 0 0\nx 0 1\np 0 5000 1\nx 0 2\np 0 6000 2\n";
         let hops = parse_raw(raw, true);
-        assert_eq!(hops[0].timings.len(), 3);
-        assert_eq!(hops[0].timings[0].rtt, None); // seq 0 never replied
-        assert!(hops[0].timings[1].rtt.is_some());
-        assert!(hops[0].timings[2].rtt.is_some());
+        // Drop entries (no rtt) are stripped from the output `timings` to match the
+        // Node.js probe, but are still counted in `stats`.
+        assert_eq!(hops[0].timings.len(), 2);
+        assert!(hops[0].timings.iter().all(|t| t.rtt.is_some()));
+        assert_eq!(hops[0].stats.total, 3);
         assert_eq!(hops[0].stats.drop, 1);
         assert_eq!(hops[0].stats.rcv, 2);
     }

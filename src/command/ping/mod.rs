@@ -7,6 +7,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
 use crate::util::private_ip::is_ip_private;
+use crate::util::validate::is_safe_host;
 use super::{MeasurementCommand, ProgressTx};
 use parse::{parse, ParsedPing, PingStatus};
 
@@ -36,6 +37,12 @@ fn default_ip_version() -> u8 { 4 }
 // ── Validation ───────────────────────────────────────────────────────────────
 
 fn validate(opts: &PingOptions) -> Result<()> {
+    // Reject targets that aren't a clean hostname/IP — in particular anything
+    // starting with `-` (would be parsed as a `ping` flag) or containing shell
+    // metacharacters. See util::validate.
+    if !is_safe_host(&opts.target) {
+        bail!("Invalid target.");
+    }
     if opts.packets < 1 || opts.packets > 16 {
         bail!("packets must be 1–16");
     }
@@ -259,5 +266,22 @@ mod tests {
             in_progress_updates: false,
         };
         assert!(validate(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_argument_injection_target() {
+        // A target that begins with `-` would be parsed by `ping` as a flag
+        // (e.g. `-f` flood). It must be rejected before spawning anything.
+        for bad in ["-f", "--help", "-O", "evil.com; id", "a b"] {
+            let opts = PingOptions {
+                target: bad.into(),
+                packets: 3,
+                protocol: "ICMP".into(),
+                port: 80,
+                ip_version: 4,
+                in_progress_updates: false,
+            };
+            assert!(validate(&opts).is_err(), "should reject target {bad:?}");
+        }
     }
 }

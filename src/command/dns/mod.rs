@@ -7,6 +7,8 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
 use super::MeasurementCommand;
+use crate::util::private_ip::is_ip_private;
+use crate::util::validate::is_safe_host;
 use parse::{parse_classic, parse_trace, ClassicResult, DnsStatus, TraceResult};
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -58,6 +60,25 @@ fn validate(opts: &DnsOptions) -> Result<()> {
     }
     if opts.ip_version != 4 && opts.ip_version != 6 {
         bail!("ipVersion must be 4 or 6");
+    }
+    // Target is passed to `dig` as a bare argument; reject anything that could be
+    // read as a flag (leading `-`/`+`) or shell syntax. For PTR queries the target
+    // is an IP literal, which is_safe_host accepts.
+    if !is_safe_host(&opts.target) {
+        bail!("Invalid target.");
+    }
+    // A custom resolver must be a clean host and must not be a private/internal
+    // address — otherwise the probe could be turned into an internal port scanner
+    // by pointing DNS queries at arbitrary internal IPs/ports (SSRF).
+    if let Some(resolver) = &opts.resolver {
+        if !is_safe_host(resolver) {
+            bail!("Invalid resolver.");
+        }
+        if let Ok(ip) = resolver.parse() {
+            if is_ip_private(ip) {
+                bail!("Private IP ranges are not allowed.");
+            }
+        }
     }
     Ok(())
 }
@@ -270,5 +291,39 @@ mod tests {
             let opts = make_opts(t, false, "UDP");
             assert!(validate(&opts).is_ok(), "type {t} should be allowed");
         }
+    }
+
+    #[test]
+    fn validate_rejects_argument_injection_target() {
+        // Target is passed to `dig` as a bare arg; a leading `-`/`+` would be an option.
+        for bad in ["-f/etc/passwd", "+norecurse", "evil.com; id", "a b"] {
+            let mut opts = make_opts("A", false, "UDP");
+            opts.target = bad.into();
+            assert!(validate(&opts).is_err(), "should reject target {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_private_resolver() {
+        // Prevents using the probe as an internal port scanner over DNS (SSRF).
+        for bad in ["10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "::ffff:127.0.0.1"] {
+            let mut opts = make_opts("A", false, "UDP");
+            opts.resolver = Some(bad.into());
+            assert!(validate(&opts).is_err(), "should reject resolver {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_accepts_public_resolver() {
+        let mut opts = make_opts("A", false, "UDP");
+        opts.resolver = Some("8.8.8.8".into());
+        assert!(validate(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_injection_resolver() {
+        let mut opts = make_opts("A", false, "UDP");
+        opts.resolver = Some("-x".into());
+        assert!(validate(&opts).is_err());
     }
 }

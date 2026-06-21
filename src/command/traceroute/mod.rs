@@ -8,6 +8,7 @@ use tokio::process::Command;
 
 use super::{MeasurementCommand, ProgressTx};
 use crate::util::private_ip::is_ip_private;
+use crate::util::validate::is_safe_host;
 use parse::{parse, ParsedTraceroute, TracerouteStatus};
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -33,6 +34,9 @@ fn default_ip_version() -> u8 { 4 }
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(opts: &TracerouteOptions) -> Result<()> {
+    if !is_safe_host(&opts.target) {
+        bail!("Invalid target.");
+    }
     if opts.ip_version != 4 && opts.ip_version != 6 {
         bail!("ipVersion must be 4 or 6");
     }

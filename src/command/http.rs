@@ -491,6 +491,7 @@ use tokio::time::{timeout, Duration, Instant};
 
 use super::MeasurementCommand;
 use crate::util::private_ip::is_ip_private;
+use crate::util::validate::{is_safe_host, is_safe_url_component};
 use parse::{
     build_raw_output, dedup_headers, parse_header_file, parse_status_text,
     parse_tls_verbose, truncate_headers, HttpStatus, HttpTimings, ParsedHttp, TlsInfo,
@@ -535,6 +536,11 @@ fn default_ip_version() -> u8 { 4 }
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(opts: &HttpOptions) -> Result<()> {
+    // Target is embedded in the curl URL and in `--resolve`; reject metacharacters
+    // and anything that isn't a clean hostname/IP.
+    if !is_safe_host(&opts.target) {
+        bail!("Invalid target.");
+    }
     if opts.ip_version != 4 && opts.ip_version != 6 {
         bail!("ipVersion must be 4 or 6");
     }
@@ -545,6 +551,40 @@ fn validate(opts: &HttpOptions) -> Result<()> {
     let method = opts.request.method.to_uppercase();
     if method != "GET" && method != "HEAD" && method != "OPTIONS" {
         bail!("method must be GET, HEAD, or OPTIONS");
+    }
+    // A custom resolver must be a clean host and must not be private (SSRF /
+    // internal port-scan via dig — see resolve_target).
+    if let Some(resolver) = &opts.resolver {
+        if !is_safe_host(resolver) {
+            bail!("Invalid resolver.");
+        }
+        if let Ok(ip) = resolver.parse() {
+            if is_ip_private(ip) {
+                bail!("Private IP ranges are not allowed.");
+            }
+        }
+    }
+    // The Host-header / SNI override is NOT used for DNS resolution but IS used as
+    // the TLS servername during cert enrichment. It must be a clean hostname so it
+    // can never carry shell syntax or break the request.
+    if let Some(host) = &opts.request.host {
+        if !is_safe_host(host) {
+            bail!("Invalid host header.");
+        }
+    }
+    // Path and query are concatenated into the curl URL — forbid control chars and
+    // whitespace (request-smuggling / CRLF injection).
+    if !is_safe_url_component(&opts.request.path) {
+        bail!("Invalid request path.");
+    }
+    if !is_safe_url_component(&opts.request.query) {
+        bail!("Invalid request query.");
+    }
+    // Custom request headers must not contain control characters (header injection).
+    for (k, v) in &opts.request.headers {
+        if k.bytes().chain(v.bytes()).any(|b| b.is_ascii_control()) {
+            bail!("Invalid request header.");
+        }
     }
     // Private IP check if target is already an IP
     if let Ok(ip) = opts.target.parse() {
@@ -714,68 +754,103 @@ fn build_curl_args(
 
 // ── TLS cert enrichment via openssl ──────────────────────────────────────────
 
-/// After a successful HTTPS request, run `openssl s_client | openssl x509` to
-/// extract the fields curl -v doesn't expose: fingerprint256, serialNumber,
+/// Spawn `cmd` with an explicit argv (NO shell), feed `stdin_data` to its stdin,
+/// and capture stdout with a timeout. stderr is discarded. Returns `None` on
+/// spawn/timeout/IO failure.
+///
+/// Using an explicit argv is what makes the TLS enrichment injection-proof:
+/// there is no shell to interpret metacharacters in the servername/host.
+async fn run_capturing(cmd: &str, args: &[String], stdin_data: &[u8], dur: Duration) -> Option<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(stdin_data).await;
+        let _ = stdin.shutdown().await; // EOF, like `echo |`
+    }
+    let out = timeout(dur, child.wait_with_output()).await.ok()?.ok()?;
+    Some(out.stdout)
+}
+
+/// Extract the first PEM certificate block (inclusive of BEGIN/END markers).
+fn extract_pem(s: &str) -> Option<String> {
+    let begin = s.find("-----BEGIN CERTIFICATE-----")?;
+    const END: &str = "-----END CERTIFICATE-----";
+    let end = s[begin..].find(END)? + begin + END.len();
+    Some(s[begin..end].to_string())
+}
+
+/// Read at most `cap + 1` bytes from `path` (the extra byte lets callers detect
+/// overflow) without loading an arbitrarily large file into memory. Curl already
+/// bounds transfers with `--max-time`, but a fast server could still deliver a
+/// large body within the window; this caps the memory we commit to it.
+async fn read_capped(path: &str, cap: usize) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = fs::File::open(path).await else { return Vec::new() };
+    let mut buf = Vec::new();
+    let _ = file.take(cap as u64 + 1).read_to_end(&mut buf).await;
+    buf
+}
+
+/// After a successful HTTPS request, run `openssl s_client` then `openssl x509`
+/// to extract the fields curl -v doesn't expose: fingerprint256, serialNumber,
 /// keyType, keyBits, subject.alt, and the real authorized status.
+///
+/// Security: both openssl invocations use an explicit argv via [`run_capturing`]
+/// — there is NO shell and NO temp file. Earlier this used `sh -c` with the
+/// servername interpolated into the command string, which was a command-injection
+/// (RCE) vector because the Host-header override flows in here unvalidated-for-DNS.
 async fn enrich_tls(tls: &mut TlsInfo, ip: &str, port: u16, servername: &str) {
     let connect_addr = if ip.contains(':') {
         format!("[{}]:{}", ip, port)
     } else {
         format!("{}:{}", ip, port)
     };
-    // No SNI when target is already an IP address
-    let sni = if servername.parse::<std::net::IpAddr>().is_ok() {
-        "-noservername".to_string()
+
+    // Build s_client args as discrete argv entries (no shell, no interpolation).
+    let mut sc_args: Vec<String> = vec![
+        "s_client".into(),
+        "-connect".into(), connect_addr,
+    ];
+    // No SNI when the target is already an IP address.
+    if servername.parse::<std::net::IpAddr>().is_ok() {
+        sc_args.push("-noservername".into());
     } else {
-        format!("-servername {}", servername)
-    };
+        sc_args.push("-servername".into());
+        sc_args.push(servername.to_string());
+    }
 
-    // Write s_client output (PEM cert) to a temp file so we can run x509 on it
-    // and also parse the verify-return-code line from stderr.
-    let id = uuid::Uuid::new_v4().to_string().replace('-', "");
-    let full_path = format!("/tmp/gp_sc_{id}.txt");
-    let pem_path = format!("/tmp/gp_cert_{id}.pem");
+    // s_client prints connection info + the PEM cert + "Verify return code" to
+    // stdout. Feed it a single newline (like `echo |`) so it finishes the
+    // handshake and exits instead of waiting for application data.
+    let Some(sc_stdout) = run_capturing("openssl", &sc_args, b"\n", Duration::from_secs(10)).await
+    else { return };
+    let full_text = String::from_utf8_lossy(&sc_stdout);
 
-    // openssl s_client writes EVERYTHING (connection info + PEM cert + "Verify return code")
-    // to stdout. Capture it all, then extract the PEM block separately for x509.
-    let sc_cmd = format!(
-        "echo | openssl s_client -connect {connect_addr} {sni} 2>/dev/null >{full_path}"
-    );
-    let _ = tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new("sh").arg("-c").arg(&sc_cmd).output(),
-    ).await;
-
-    // Extract just the PEM block so openssl x509 can parse it cleanly
-    let extract_cmd = format!(
-        "sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' {full_path} >{pem_path}"
-    );
-    let _ = Command::new("sh").arg("-c").arg(&extract_cmd).output().await;
-
-    // Parse verify result from the full s_client output
-    if let Ok(full_text) = fs::read_to_string(&full_path).await {
-        for line in full_text.lines() {
-            if line.contains("Verify return code:") {
-                tls.authorized = line.contains("Verify return code: 0 (ok)");
-                break;
-            }
+    // Verify result, printed by s_client itself.
+    for line in full_text.lines() {
+        if line.contains("Verify return code:") {
+            tls.authorized = line.contains("Verify return code: 0 (ok)");
+            break;
         }
     }
-    let _ = fs::remove_file(&full_path).await;
 
-    // Parse x509 cert details from the extracted PEM
-    let x509_cmd = format!(
-        "openssl x509 -noout -fingerprint -sha256 -serial -text -in {pem_path} 2>/dev/null"
-    );
-    let x509_out = tokio::time::timeout(
-        Duration::from_secs(4),
-        Command::new("sh").arg("-c").arg(&x509_cmd).output(),
-    ).await.ok().and_then(|r| r.ok());
-
-    let _ = fs::remove_file(&pem_path).await;
-
-    let Some(x509) = x509_out else { return };
-    let text = String::from_utf8_lossy(&x509.stdout);
+    // Extract the PEM block in-process (no `sed`, no temp file) and pipe it to
+    // `openssl x509` over stdin (no `-in <path>`).
+    let Some(pem) = extract_pem(&full_text) else { return };
+    let x509_args: Vec<String> = vec![
+        "x509".into(), "-noout".into(),
+        "-fingerprint".into(), "-sha256".into(),
+        "-serial".into(), "-text".into(),
+    ];
+    let Some(x509_stdout) = run_capturing("openssl", &x509_args, pem.as_bytes(), Duration::from_secs(4)).await
+    else { return };
+    let text = String::from_utf8_lossy(&x509_stdout);
 
     let mut next_is_san = false;
     for line in text.lines() {
@@ -874,7 +949,8 @@ async fn run_http(opts: &HttpOptions) -> Result<ParsedHttp> {
 
     // Read temp files then clean up
     let raw_headers_file = fs::read_to_string(&headers_path).await.unwrap_or_default();
-    let raw_body_bytes = fs::read(&body_path).await.unwrap_or_default();
+    // Bound the body we pull into memory; it's truncated to BODY_LIMIT below anyway.
+    let raw_body_bytes = read_capped(&body_path, BODY_LIMIT).await;
     let _ = fs::remove_file(&headers_path).await;
     let _ = fs::remove_file(&body_path).await;
 
@@ -1065,4 +1141,97 @@ pub async fn run_measurement(
         },
     };
     run_http(&opts).await
+}
+
+// ── Security / validation tests ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod validate_tests {
+    use super::*;
+
+    fn opts() -> HttpOptions {
+        HttpOptions {
+            target: "example.com".into(),
+            resolver: None,
+            protocol: "HTTPS".into(),
+            port: None,
+            ip_version: 4,
+            in_progress_updates: false,
+            request: HttpRequestOptions {
+                method: "HEAD".into(),
+                host: None,
+                path: "/".into(),
+                query: String::new(),
+                headers: HashMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn accepts_clean_request() {
+        assert!(validate(&opts()).is_ok());
+    }
+
+    #[test]
+    fn rejects_host_header_command_injection() {
+        // Regression for the enrich_tls RCE: the Host override is used as the TLS
+        // servername. Shell syntax here must never be accepted.
+        for bad in [
+            "evil.com; touch /tmp/pwned",
+            "$(id)",
+            "`id`",
+            "a.com\nb",
+            "evil.com -x",
+        ] {
+            let mut o = opts();
+            o.request.host = Some(bad.into());
+            assert!(validate(&o).is_err(), "should reject host {bad:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_argument_injection_target() {
+        let mut o = opts();
+        o.target = "-o/tmp/x".into();
+        assert!(validate(&o).is_err());
+    }
+
+    #[test]
+    fn rejects_private_resolver() {
+        let mut o = opts();
+        o.resolver = Some("169.254.169.254".into());
+        assert!(validate(&o).is_err());
+    }
+
+    #[test]
+    fn rejects_crlf_in_path_and_query() {
+        let mut o = opts();
+        o.request.path = "/x\r\nInjected: 1".into();
+        assert!(validate(&o).is_err());
+        let mut o = opts();
+        o.request.query = "a=1 b".into();
+        assert!(validate(&o).is_err());
+    }
+
+    #[test]
+    fn rejects_control_chars_in_headers() {
+        let mut o = opts();
+        o.request.headers.insert("X-Foo".into(), "bar\r\nEvil: 1".into());
+        assert!(validate(&o).is_err());
+    }
+
+    #[test]
+    fn extract_pem_pulls_only_cert_block() {
+        let s = "noise\n-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----\ntrailer";
+        let pem = extract_pem(s).expect("should find PEM");
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(pem.ends_with("-----END CERTIFICATE-----"));
+        assert!(!pem.contains("noise"));
+        assert!(!pem.contains("trailer"));
+    }
+
+    #[test]
+    fn extract_pem_none_when_absent() {
+        assert!(extract_pem("no cert here").is_none());
+    }
 }
