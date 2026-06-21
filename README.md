@@ -263,21 +263,35 @@ dispatch(req, client, status, limiter, stats)
 
 ## Performance
 
-Measured live with both probes connected to the Globalping API — Rust on the same amd64 machine and on an Oracle Cloud ARM64 instance (1 OCPU / 6 GB RAM, Mumbai).
+Measured live with probes connected to the Globalping API. Each run: 30 samples × 10 s over 5 minutes.  
+Raw data in [`teststats/`](teststats/).
 
-| Metric | Rust (amd64) | Rust (arm64, Oracle) | Node.js (amd64) |
-|---|---|---|---|
-| Docker image size | ~58 MB | ~57 MB | ~111 MB |
-| Docker image layers | 4 | 4 | 11 |
-| Memory (connected, idle) | **13.8 MiB** | **5.2 MiB** | 47.3 MiB |
-| Startup to API connect | ~5 s | ~6 s | ~10 s |
-| PIDs | 9 | 2 | 12 |
+### Memory & CPU (idle, connected)
+
+| Metric | Rust amd64 (WSL2) | Rust arm64 (Oracle) | Node.js amd64 (WSL2) | Node.js arm64 (Oracle) |
+|---|---|---|---|---|
+| RAM avg (steady state) | 19.1 MiB | **5.4 MiB** | 61.3 MiB | 50.8 MiB |
+| RAM range | 15–20 MiB | 5.2–5.6 MiB | 60.5–62.2 MiB | 48.2–51.4 MiB |
+| CPU idle avg | ~0.01% | ~0.01% | ~0.05% | ~0.05% |
+| CPU peak (measurement) | ~1% | ~23% | ~0.17% | ~0.18% |
+
+### Image stats
+
+| Metric | Rust | Node.js |
+|---|---|---|
+| Docker image size | ~58 MB | ~111 MB |
+| Docker image layers | 4 | 11 |
+| Startup to API connect | ~5 s | ~10 s |
 
 **Highlights:**
-- **~3.4× less RAM** than Node.js on the same hardware (13.8 MiB vs 47.3 MiB)
-- **~9× less RAM** on ARM64 (5.2 MiB — no JIT overhead, no V8 heap)
-- **~47 % smaller Docker image** (58 MB vs 111 MB)
+- **~3.2× less RAM** than Node.js on amd64 (19 MiB vs 61 MiB)
+- **~9.4× less RAM** on ARM64 (5.4 MiB vs 50.8 MiB — no V8 JIT heap)
+- **~47% smaller Docker image** (58 MB vs 111 MB)
 - **2× faster startup** (~5 s vs ~10 s to first API connection)
+- CPU spikes on measurement are brief and return to ~0% immediately after
+
+> amd64 figures are from WSL2 (Hyper-V VM) which adds slight memory overhead vs bare-metal Linux.
+> ARM64 figures are from Oracle Cloud bare-metal and are the more accurate reference.
 
 ---
 
