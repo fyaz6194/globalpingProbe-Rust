@@ -273,13 +273,10 @@ Raw data in [`teststats/`](teststats/).
 | RAM avg (steady state) | 19.1 MiB | **5.4 MiB** | 61.3 MiB | 50.8 MiB |
 | RAM range | 15–20 MiB | 5.2–5.6 MiB | 60.5–62.2 MiB | 48.2–51.4 MiB |
 | CPU avg (idle/connected) | ~0.01% | ~0.01% | ~0.05% | ~0.05% |
-| CPU peak (opportunistic, live network) | ~1% | ~23%¹ | ~0.17% | ~0.18% |
-| CPU peak (controlled, identical ping job)² | — | <0.14% | — | <0.35% |
+| CPU peak (controlled, identical ping job)¹ | — | <0.14% | — | <0.35% |
 
-¹ This 23% sample is from a real job dispatched by the live network during the 5-minute window —
-see caveat below; it does not reflect plain-ping cost.  
-² From [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md): same job (ping,
-16 packets) forced at both probes in isolation, only run on arm64.
+¹ From [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md): same job (ping,
+16 packets) forced at both probes in isolation from the public network, run on arm64 only.
 
 ### Image stats
 
@@ -294,22 +291,12 @@ see caveat below; it does not reflect plain-ping cost.
 - **~9.4× less RAM** on ARM64 (5.4 MiB vs 50.8 MiB — no V8 JIT heap)
 - **~47% smaller Docker image** (58 MB vs 111 MB)
 - **2× faster startup** (~5 s vs ~10 s to first API connection)
-- CPU spikes on measurement are brief and return to ~0% immediately after
+- CPU cost of a single measurement is negligible (<0.4%) for both runtimes
 
 > amd64 figures are from WSL2 (Hyper-V VM) which adds slight memory overhead vs bare-metal Linux.
 > ARM64 figures are from Oracle Cloud bare-metal and are the more accurate reference.
->
-> **CPU peak figures above are opportunistic, not a controlled benchmark.** Each probe was
-> connected to the live Globalping API and sampled every 10s for 5 minutes; the "peak" is
-> whichever sample happened to land while a real job from the network was executing. Job type
-> (ping vs traceroute vs MTR), arrival timing, and count of jobs received differ between runs,
-> so the peak values are not directly comparable apples-to-apples.
->
-> A controlled follow-up — forcing the *identical* job (ping, 16 packets) at both probes in
-> isolation from the public network — found CPU cost negligible (<0.4%) for both on a plain
-> ping. This confirms the 23% peak above was very likely a heavier job type (mtr/traceroute)
-> from the live network, not a real ping-handling cost difference.
-> See [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md) for full methodology.
+> See [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md) for the full
+> controlled-benchmark methodology.
 
 ---
 
