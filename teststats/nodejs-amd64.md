@@ -45,7 +45,7 @@
 
 | Metric | Value |
 |--------|-------|
-| CPU idle avg | ~0.05% |
+| CPU avg (idle/connected) | ~0.05% |
 | CPU peak | 0.17% |
 | RAM min | 60.52 MiB |
 | RAM max | 62.22 MiB |

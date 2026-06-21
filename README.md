@@ -272,8 +272,8 @@ Raw data in [`teststats/`](teststats/).
 |---|---|---|---|---|
 | RAM avg (steady state) | 19.1 MiB | **5.4 MiB** | 61.3 MiB | 50.8 MiB |
 | RAM range | 15–20 MiB | 5.2–5.6 MiB | 60.5–62.2 MiB | 48.2–51.4 MiB |
-| CPU idle avg | ~0.01% | ~0.01% | ~0.05% | ~0.05% |
-| CPU peak (measurement) | ~1% | ~23% | ~0.17% | ~0.18% |
+| CPU avg (idle/connected) | ~0.01% | ~0.01% | ~0.05% | ~0.05% |
+| CPU peak (during measurement) | ~1% | ~23% | ~0.17% | ~0.18% |
 
 ### Image stats
 
