@@ -273,7 +273,13 @@ Raw data in [`teststats/`](teststats/).
 | RAM avg (steady state) | 19.1 MiB | **5.4 MiB** | 61.3 MiB | 50.8 MiB |
 | RAM range | 15–20 MiB | 5.2–5.6 MiB | 60.5–62.2 MiB | 48.2–51.4 MiB |
 | CPU avg (idle/connected) | ~0.01% | ~0.01% | ~0.05% | ~0.05% |
-| CPU peak (during measurement) | ~1% | ~23% | ~0.17% | ~0.18% |
+| CPU peak (opportunistic, live network) | ~1% | ~23%¹ | ~0.17% | ~0.18% |
+| CPU peak (controlled, identical ping job)² | — | <0.14% | — | <0.35% |
+
+¹ This 23% sample is from a real job dispatched by the live network during the 5-minute window —
+see caveat below; it does not reflect plain-ping cost.  
+² From [`teststats/controlled-benchmark.md`](teststats/controlled-benchmark.md): same job (ping,
+16 packets) forced at both probes in isolation, only run on arm64.
 
 ### Image stats
 
