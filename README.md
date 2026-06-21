@@ -292,6 +292,13 @@ Raw data in [`teststats/`](teststats/).
 
 > amd64 figures are from WSL2 (Hyper-V VM) which adds slight memory overhead vs bare-metal Linux.
 > ARM64 figures are from Oracle Cloud bare-metal and are the more accurate reference.
+>
+> **CPU peak figures are opportunistic, not a controlled benchmark.** Each probe was connected
+> to the live Globalping API and sampled every 10s for 5 minutes; the "peak" is whichever sample
+> happened to land while a real job from the network was executing. Job type (ping vs traceroute
+> vs MTR), arrival timing, and count of jobs received differ between runs, so the peak values are
+> not directly comparable apples-to-apples — they only show that CPU usage is bursty and returns
+> to near-zero immediately after.
 
 ---
 
