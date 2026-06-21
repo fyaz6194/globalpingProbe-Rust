@@ -7,8 +7,4 @@ RUN apt-get update -y && apt-get install --no-install-recommends -y \
 WORKDIR /app
 COPY . .
 
-# Strip the Windows-only [build] target from .cargo/config.toml so cargo
-# falls back to the container's native host target (x86_64 or aarch64).
-RUN sed -i '/^\[build\]/,/^target\s*=/d' .cargo/config.toml
-
 CMD ["cargo", "test", "--all", "--", "--nocapture"]

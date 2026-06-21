@@ -20,12 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy manifests and cargo config first
+# Copy manifests only (.cargo/config.toml is a local Windows dev artifact, not needed in container)
 COPY Cargo.toml Cargo.lock ./
-COPY .cargo .cargo/
-
-# Strip the Windows-only build target so cargo uses the container's native arch
-RUN sed -i '/^\[build\]/,/^target\s*=/d' .cargo/config.toml
 
 # Stub out src so we can compile deps without the real source
 RUN mkdir -p src tests/integration \
